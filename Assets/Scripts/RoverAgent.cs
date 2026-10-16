@@ -15,19 +15,23 @@ public class RoverAgent : Agent
     [Header("Target")]
     public Transform meetingPoint;
 
+    [Header("Operating Mode")]
+    public bool demonstrationMode = false;
+
     [Header("Success Conditions")]
-    public float successDistance = 3f;
+    public float successDistance = 2f;
     public float stopSpeed = 0.5f;
 
-    [Header("Training Area")]
-    public float maxDistance = 300f;
+    [Header("Training Settings")]
+    public float maxDistance = 100f;
     public float maxSpeed = 20f;
+    public int maxIdleSteps = 400;
 
     [Header("Rewards")]
-    public float progressReward = 0.02f;
-    public float successReward = 3f;
+    public float progressReward = 0.2f;
+    public float successReward = 5f;
     public float failurePenalty = -1f;
-    public float stepPenalty = -0.0005f;
+    public float stepPenalty = -0.001f;
 
     private CarControl car;
     private Rigidbody rb;
@@ -36,6 +40,16 @@ public class RoverAgent : Agent
     private Quaternion startRotation;
 
     private float previousDistance;
+    private float bestDistance;
+    private int idleSteps;
+
+    private bool hasArrived = false;
+
+    // Can be read by the drone agent later
+    public bool HasArrived
+    {
+        get { return hasArrived; }
+    }
 
     public override void Initialize()
     {
@@ -51,71 +65,88 @@ public class RoverAgent : Agent
 
     public override void OnEpisodeBegin()
     {
+        hasArrived = false;
+        idleSteps = 0;
+
         car.useAgentControl = true;
         car.ResetControls();
-
-        rb.linearVelocity = Vector3.zero;
-        rb.angularVelocity = Vector3.zero;
 
         transform.SetPositionAndRotation(
             startPosition,
             startRotation
         );
 
-        rb.Sleep();
-        rb.WakeUp();
+        rb.linearVelocity = Vector3.zero;
+        rb.angularVelocity = Vector3.zero;
 
         if (meetingPoint != null)
         {
-            previousDistance = GetDistanceToTarget();
+            previousDistance = GetDistance();
+            bestDistance = previousDistance;
         }
         else
         {
             previousDistance = 0f;
+            bestDistance = 0f;
+            Debug.LogWarning(
+                "RoverAgent: MeetingPoint saknas!"
+            );
         }
     }
 
     public override void CollectObservations(
         VectorSensor sensor)
     {
+        // IMPORTANT:
+        // Preserve the same 5 observations
+        // used when training Rover.onnx.
+
         if (meetingPoint == null)
         {
-            sensor.AddObservation(Vector3.zero);
-            sensor.AddObservation(0f);
-            sensor.AddObservation(0f);
+            for (int i = 0; i < 5; i++)
+                sensor.AddObservation(0f);
+
             return;
         }
 
-        // Direction to MeetingPoint
         Vector3 direction =
             meetingPoint.position - transform.position;
+
+        direction.y = 0f;
 
         Vector3 localDirection =
             transform.InverseTransformDirection(
                 direction.normalized
             );
 
-        // 3 observations: target direction
-        sensor.AddObservation(localDirection);
+        // 2 observations: direction
+        sensor.AddObservation(localDirection.x);
+        sensor.AddObservation(localDirection.z);
 
-        // 1 observation: normalized distance
-        float distance = GetDistanceToTarget();
-
+        // 1 observation: distance
         sensor.AddObservation(
-            Mathf.Clamp01(distance / maxDistance)
+            Mathf.Clamp01(
+                GetDistance() / maxDistance
+            )
         );
 
-        // 1 observation: forward speed
-        float forwardSpeed =
+        // 2 observations: velocity
+        Vector3 localVelocity =
             transform.InverseTransformDirection(
                 rb.linearVelocity
-            ).z;
+            );
 
         sensor.AddObservation(
             Mathf.Clamp(
-                forwardSpeed / maxSpeed,
-                -1f,
-                1f
+                localVelocity.x / maxSpeed,
+                -1f, 1f
+            )
+        );
+
+        sensor.AddObservation(
+            Mathf.Clamp(
+                localVelocity.z / maxSpeed,
+                -1f, 1f
             )
         );
     }
@@ -123,18 +154,21 @@ public class RoverAgent : Agent
     public override void OnActionReceived(
         ActionBuffers actions)
     {
-        // Continuous action 0: steering
+        // Prevent further AI movement after arrival
+        if (hasArrived && demonstrationMode)
+        {
+            car.ResetControls();
+            return;
+        }
+
         float steering = Mathf.Clamp(
             actions.ContinuousActions[0],
-            -1f,
-            1f
+            -1f, 1f
         );
 
-        // Continuous action 1: throttle
         float throttle = Mathf.Clamp(
             actions.ContinuousActions[1],
-            -1f,
-            1f
+            -1f, 1f
         );
 
         car.SetAgentInput(steering, throttle);
@@ -142,9 +176,10 @@ public class RoverAgent : Agent
         if (meetingPoint == null)
             return;
 
-        float distance = GetDistanceToTarget();
+        float distance = GetDistance();
+        float speed = rb.linearVelocity.magnitude;
 
-        // Reward movement toward MeetingPoint
+        // Reward progress toward MeetingPoint
         float progress = previousDistance - distance;
 
         AddReward(progress * progressReward);
@@ -152,43 +187,69 @@ public class RoverAgent : Agent
 
         previousDistance = distance;
 
-        // Successful arrival and stop
+        // Successful arrival
         if (distance < successDistance &&
-            rb.linearVelocity.magnitude < stopSpeed)
+            speed < stopSpeed)
         {
             AddReward(successReward);
-
             car.ResetControls();
+
+            if (demonstrationMode)
+            {
+                hasArrived = true;
+
+                // Keep rover stationary for docking
+                rb.linearVelocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+                rb.isKinematic = true;
+
+                Debug.Log(
+                    "ROVER ARRIVED! Waiting for drone."
+                );
+
+                return;
+            }
+
             EndEpisode();
             return;
         }
 
-        // Failure: too far from target
-        if (distance > maxDistance)
+        // Detect lack of progress
+        if (distance < bestDistance - 0.1f)
         {
-            AddReward(failurePenalty);
-
-            car.ResetControls();
-            EndEpisode();
-            return;
+            bestDistance = distance;
+            idleSteps = 0;
+        }
+        else
+        {
+            idleSteps++;
         }
 
-        // Failure: rover overturned
-        float upright = Vector3.Dot(
-            transform.up,
-            Vector3.up
-        );
-
-        if (upright < 0.3f)
+        // Training failures
+        if (idleSteps > maxIdleSteps ||
+            distance > maxDistance ||
+            Vector3.Dot(
+                transform.up,
+                Vector3.up
+            ) < 0.3f)
         {
             AddReward(failurePenalty);
-
             car.ResetControls();
-            EndEpisode();
+
+            if (!demonstrationMode)
+            {
+                EndEpisode();
+            }
+            else
+            {
+                // Keep trying during demonstration
+                idleSteps = 0;
+                bestDistance = distance;
+            }
         }
     }
 
-    private float GetDistanceToTarget()
+    private float GetDistance()
     {
         Vector3 difference =
             meetingPoint.position - transform.position;
@@ -248,6 +309,11 @@ public class RoverAgent : Agent
         {
             car.ResetControls();
             car.useAgentControl = false;
+        }
+
+        if (rb != null)
+        {
+            rb.isKinematic = false;
         }
 
         base.OnDisable();
