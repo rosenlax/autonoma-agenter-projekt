@@ -6,6 +6,13 @@
 # See: https://github.com/github/gitignore/tree/main/Global
 #
 .utmp/
+
+# Local Python virtual environment
+.venv/
+
+# Per-user Unity AI Assistant settings
+/ProjectSettings/Packages/com.unity.ai.assistant/Settings.json
+
 /[Ll]ibrary/
 /[Tt]emp/
 /[Oo]bj/
