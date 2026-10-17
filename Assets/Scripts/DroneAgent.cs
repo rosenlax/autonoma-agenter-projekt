@@ -12,43 +12,70 @@ using UnityEngine.InputSystem;
 [RequireComponent(typeof(DroneController))]
 public class DroneAgent : Agent
 {
+    public enum TrainingStage
+    {
+        Approach = 0,
+        Hover = 1,
+        Landing = 2
+    }
+
     [Header("Landing Target")]
     public Transform landingTarget;
     public RoverAgent rover;
 
-    [Header("Training Mode")]
+    [Header("Training")]
     public bool trainingMode = true;
+    public TrainingStage trainingStage =
+        TrainingStage.Approach;
     public bool roverReadyAtStart = true;
 
     [Header("Navigation")]
-    public float hoverHeight = 4f;
+    public float hoverHeight = 3f;
     public float maxDistance = 100f;
     public float maxSpeed = 15f;
 
-    [Header("Landing Conditions")]
+    [Header("Approach")]
+    public float approachRadius = 1.5f;
+    public float approachMaxSpeed = 3f;
+
+    [Header("Hover")]
+    public float hoverRadius = 0.8f;
+    public float hoverSpeed = 1f;
+    public int requiredHoverSteps = 50;
+
+    [Header("Landing")]
     public float landingRadius = 0.7f;
     public float landingHeightTolerance = 0.35f;
     public float landingSpeed = 0.6f;
+    public int requiredLandingSteps = 10;
 
     [Header("Rewards")]
-    public float progressReward = 0.1f;
+    public float progressReward = 0.15f;
     public float successReward = 5f;
     public float failurePenalty = -2f;
     public float stepPenalty = -0.0005f;
+
+    [Header("Smooth Flight Rewards")]
+    public float actionChangePenalty = 0.0005f;
+    public float actionStrengthPenalty = 0.0001f;
+    public float nearTargetSpeedPenalty = 0.0003f;
+    public float stableNearTargetReward = 0.001f;
 
     private Rigidbody rb;
     private DroneController controller;
 
     private Vector3 startPosition;
     private Quaternion startRotation;
+
     private float previousDistance;
+    private Vector3 previousAction;
+    private bool hasPreviousAction;
 
+    private int stableSteps;
     private bool hasLanded;
+    private bool episodeFinished;
 
-    public bool HasLanded
-    {
-        get { return hasLanded; }
-    }
+    public bool HasLanded => hasLanded;
 
     public override void Initialize()
     {
@@ -70,26 +97,50 @@ public class DroneAgent : Agent
         return rover != null && rover.HasArrived;
     }
 
-    private Vector3 GetNavigationTarget()
+    private Vector3 GetHoverTarget()
     {
         if (landingTarget == null)
             return transform.position;
 
-        if (RoverReady())
-        {
-            return landingTarget.position;
-        }
+        return landingTarget.position +
+               Vector3.up * hoverHeight;
+    }
 
-        return landingTarget.position
-            + Vector3.up * hoverHeight;
+    private Vector3 GetNavigationTarget()
+    {
+        Vector3 hoverTarget = GetHoverTarget();
+
+        if (landingTarget == null)
+            return hoverTarget;
+
+        if (trainingStage != TrainingStage.Landing)
+            return hoverTarget;
+
+        if (!RoverReady())
+            return hoverTarget;
+
+        Vector3 difference =
+            landingTarget.position - transform.position;
+
+        Vector2 horizontal = new Vector2(
+            difference.x,
+            difference.z
+        );
+
+        if (horizontal.magnitude > hoverRadius)
+            return hoverTarget;
+
+        return landingTarget.position;
     }
 
     public override void OnEpisodeBegin()
     {
         hasLanded = false;
+        episodeFinished = false;
+        stableSteps = 0;
 
-        controller.useAgentControl = true;
-        controller.ResetControls();
+        previousAction = Vector3.zero;
+        hasPreviousAction = false;
 
         rb.isKinematic = false;
 
@@ -101,6 +152,11 @@ public class DroneAgent : Agent
         rb.linearVelocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
 
+        controller.useAgentControl = true;
+
+        // Reset altitude hold AFTER repositioning.
+        controller.ResetControls();
+
         previousDistance = Vector3.Distance(
             transform.position,
             GetNavigationTarget()
@@ -110,6 +166,8 @@ public class DroneAgent : Agent
     public override void CollectObservations(
         VectorSensor sensor)
     {
+        // Always 11 observations.
+
         if (landingTarget == null)
         {
             for (int i = 0; i < 11; i++)
@@ -119,15 +177,14 @@ public class DroneAgent : Agent
         }
 
         Vector3 difference =
-            GetNavigationTarget()
-            - transform.position;
+            GetNavigationTarget() - transform.position;
 
         Vector3 localTarget =
             transform.InverseTransformDirection(
                 difference
             );
 
-        // 3: relative target position
+        // 1-3: target direction and distance
         sensor.AddObservation(
             Vector3.ClampMagnitude(
                 localTarget / maxDistance,
@@ -135,12 +192,12 @@ public class DroneAgent : Agent
             )
         );
 
-        // 3: relative velocity
         Vector3 localVelocity =
             transform.InverseTransformDirection(
                 rb.linearVelocity
             );
 
+        // 4-6: velocity
         sensor.AddObservation(
             Vector3.ClampMagnitude(
                 localVelocity / maxSpeed,
@@ -148,19 +205,19 @@ public class DroneAgent : Agent
             )
         );
 
-        // 3: orientation relative to gravity
+        // 7-9: orientation
         sensor.AddObservation(
             transform.InverseTransformDirection(
                 Vector3.up
             )
         );
 
-        // 1: rover ready status
+        // 10: rover ready
         sensor.AddObservation(
             RoverReady() ? 1f : 0f
         );
 
-        // 1: horizontal distance
+        // 11: horizontal target distance
         Vector3 flatDifference = difference;
         flatDifference.y = 0f;
 
@@ -174,7 +231,7 @@ public class DroneAgent : Agent
     public override void OnActionReceived(
         ActionBuffers actions)
     {
-        if (hasLanded)
+        if (episodeFinished || hasLanded)
         {
             controller.ResetControls();
             return;
@@ -195,6 +252,9 @@ public class DroneAgent : Agent
             -1f, 1f
         );
 
+        Vector3 currentAction =
+            new Vector3(pitch, roll, lift);
+
         controller.SetAgentInput(
             pitch,
             roll,
@@ -211,6 +271,14 @@ public class DroneAgent : Agent
             target
         );
 
+        float speed = rb.linearVelocity.magnitude;
+
+        float upright = Vector3.Dot(
+            transform.up,
+            Vector3.up
+        );
+
+        // 1. Reward actual progress toward target.
         float progress =
             previousDistance - distance;
 
@@ -219,9 +287,139 @@ public class DroneAgent : Agent
 
         previousDistance = distance;
 
+        // 2. Penalize rapid changes in AI commands.
+        // Small penalty: do not prevent necessary turns.
+        if (hasPreviousAction)
+        {
+            float change =
+                Vector3.Distance(
+                    currentAction,
+                    previousAction
+                );
+
+            AddReward(
+                -change * actionChangePenalty
+            );
+        }
+
+        // 3. Slightly discourage extreme commands.
+        AddReward(
+            -currentAction.sqrMagnitude *
+            actionStrengthPenalty
+        );
+
+        previousAction = currentAction;
+        hasPreviousAction = true;
+
+        // 4. Encourage stability near the goal.
+        float proximity = 1f -
+            Mathf.Clamp01(distance / 5f);
+
+        if (upright > 0.9f)
+        {
+            AddReward(
+                proximity * stableNearTargetReward
+            );
+        }
+
+        // 5. Slow down as target gets closer.
+        if (distance < 3f)
+        {
+            AddReward(
+                -speed * nearTargetSpeedPenalty
+            );
+        }
+
+        switch (trainingStage)
+        {
+            case TrainingStage.Approach:
+                CheckApproach(distance, speed, upright);
+                break;
+
+            case TrainingStage.Hover:
+                CheckHover(distance, speed, upright);
+                break;
+
+            case TrainingStage.Landing:
+                CheckLanding(speed, upright);
+                break;
+        }
+
+        if (episodeFinished)
+            return;
+
+        // Failure: flies too far.
+        if (distance > maxDistance)
+        {
+            FailEpisode();
+            return;
+        }
+
+        // Failure: falls far below landing point.
+        if (transform.position.y <
+            landingTarget.position.y - 2f)
+        {
+            FailEpisode();
+            return;
+        }
+
+        // Failure: overturns.
+        if (upright < 0.3f)
+        {
+            FailEpisode();
+        }
+    }
+
+    private void CheckApproach(
+        float distance,
+        float speed,
+        float upright)
+    {
+        bool reachedTarget =
+            distance < approachRadius &&
+            speed < approachMaxSpeed &&
+            upright > 0.8f;
+
+        if (reachedTarget)
+            CompleteStage();
+    }
+
+    private void CheckHover(
+        float distance,
+        float speed,
+        float upright)
+    {
+        bool stable =
+            distance < hoverRadius &&
+            speed < hoverSpeed &&
+            upright > 0.9f;
+
+        if (stable)
+        {
+            stableSteps++;
+            AddReward(0.003f);
+        }
+        else
+        {
+            stableSteps = 0;
+        }
+
+        if (stableSteps >= requiredHoverSteps)
+            CompleteStage();
+    }
+
+    private void CheckLanding(
+        float speed,
+        float upright)
+    {
+        if (!RoverReady())
+        {
+            stableSteps = 0;
+            return;
+        }
+
         Vector3 difference =
-            landingTarget.position
-            - transform.position;
+            landingTarget.position - transform.position;
 
         float horizontalDistance =
             new Vector2(
@@ -232,81 +430,77 @@ public class DroneAgent : Agent
         float verticalDistance =
             Mathf.Abs(difference.y);
 
-        float speed =
-            rb.linearVelocity.magnitude;
-
-        bool stable =
-            Vector3.Dot(
-                transform.up,
-                Vector3.up
-            ) > 0.9f;
-
-        // Landing is only permitted
-        // when the rover is ready
-        if (RoverReady() &&
+        bool stableLanding =
             horizontalDistance < landingRadius &&
             verticalDistance < landingHeightTolerance &&
             speed < landingSpeed &&
-            stable)
+            upright > 0.9f;
+
+        if (stableLanding)
         {
-            AddReward(successReward);
+            stableSteps++;
+            AddReward(0.01f);
+        }
+        else
+        {
+            stableSteps = 0;
+        }
 
-            controller.ResetControls();
+        if (stableSteps >= requiredLandingSteps)
+            CompleteStage();
+    }
 
-            if (trainingMode)
-            {
-                EndEpisode();
-            }
-            else
-            {
-                hasLanded = true;
-                rb.linearVelocity = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
-                rb.isKinematic = true;
+    private void RecordResult(bool success)
+    {
+        // Visible in TensorBoard custom statistics.
+        Academy.Instance.StatsRecorder.Add(
+            "Drone/SuccessRate",
+            success ? 1f : 0f
+        );
+    }
 
-                Debug.Log(
-                    "DRONE LANDED ON ROVER!"
-                );
-            }
-
+    private void CompleteStage()
+    {
+        if (episodeFinished)
             return;
-        }
 
-        // Failure when too far away
-        if (distance > maxDistance)
+        episodeFinished = true;
+
+        AddReward(successReward);
+        RecordResult(true);
+
+        controller.ResetControls();
+
+        if (trainingMode)
         {
-            AddReward(failurePenalty);
+            EndEpisode();
+        }
+        else
+        {
+            hasLanded = true;
 
-            if (trainingMode)
-                EndEpisode();
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+            rb.isKinematic = true;
 
+            Debug.Log("DRONE STAGE COMPLETED!");
+        }
+    }
+
+    private void FailEpisode()
+    {
+        if (episodeFinished)
             return;
-        }
 
-        // Failure when falling below
-        // the intended landing height
-        if (transform.position.y <
-            landingTarget.position.y - 1f)
-        {
-            AddReward(failurePenalty);
+        episodeFinished = true;
 
-            if (trainingMode)
-                EndEpisode();
+        AddReward(failurePenalty);
+        RecordResult(false);
 
-            return;
-        }
+        controller.ResetControls();
 
-        // Failure when tilted too far
-        if (Vector3.Dot(
-            transform.up,
-            Vector3.up
-        ) < 0.4f)
-        {
-            AddReward(failurePenalty);
-
-            if (trainingMode)
-                EndEpisode();
-        }
+        if (trainingMode)
+            EndEpisode();
     }
 
     public override void Heuristic(
@@ -325,32 +519,39 @@ public class DroneAgent : Agent
         {
             if (keyboard.wKey.isPressed)
                 actions[0] = 1f;
+
             if (keyboard.sKey.isPressed)
                 actions[0] = -1f;
 
-            if (keyboard.aKey.isPressed)
-                actions[1] = 1f;
             if (keyboard.dKey.isPressed)
+                actions[1] = 1f;
+
+            if (keyboard.aKey.isPressed)
                 actions[1] = -1f;
 
             if (keyboard.rKey.isPressed)
                 actions[2] = 1f;
+
             if (keyboard.fKey.isPressed)
                 actions[2] = -1f;
         }
+
 #elif ENABLE_LEGACY_INPUT_MANAGER
         if (Input.GetKey(KeyCode.W))
             actions[0] = 1f;
+
         if (Input.GetKey(KeyCode.S))
             actions[0] = -1f;
 
-        if (Input.GetKey(KeyCode.A))
-            actions[1] = 1f;
         if (Input.GetKey(KeyCode.D))
+            actions[1] = 1f;
+
+        if (Input.GetKey(KeyCode.A))
             actions[1] = -1f;
 
         if (Input.GetKey(KeyCode.R))
             actions[2] = 1f;
+
         if (Input.GetKey(KeyCode.F))
             actions[2] = -1f;
 #endif
