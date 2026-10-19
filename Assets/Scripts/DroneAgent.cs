@@ -365,30 +365,43 @@ public class DroneAgent : Agent
             FailEpisode();
     }
 
-    private void CheckApproach(float distance, float speed, float upright)
+
+private void CheckApproach(float distance, float speed, float upright)
+{
+    // Keep original training conditions unchanged.
+    // This preserves compatibility with the trained model.
+    if (trainingMode)
     {
         bool reachedTarget =
             distance < approachRadius &&
             speed < approachMaxSpeed &&
             upright > 0.8f;
 
-        if (!reachedTarget)
-            return;
-
-        if (trainingMode)
-        {
-            // Keep Approach training exactly as before.
+        if (reachedTarget)
             CompleteStage();
-            return;
-        }
 
-        // Do not freeze the rigidbody here: start automatic position hold.
-        trainingStage = TrainingStage.Hover;
-        stableSteps = 0;
-        controller.SetPositionHoldTarget(GetHoverTarget());
-
-        Debug.Log("DRONE APPROACH COMPLETED! Switching to HOVER.");
+        return;
     }
+
+    // INFERENCE ONLY:
+    // Switch to automatic position hold earlier
+    // to brake before reaching the truck.
+    float earlyHoverDistance = 5f;
+
+    if (distance >= earlyHoverDistance)
+        return;
+
+    // Hand over control to the hover controller.
+    trainingStage = TrainingStage.Hover;
+    stableSteps = 0;
+
+    controller.SetPositionHoldTarget(GetHoverTarget());
+
+    Debug.Log(
+        "DRONE APPROACH HANDOFF! Switching to automatic HOVER."
+    );
+}
+
 
     private void CheckHover(float distance, float speed, float upright)
     {
