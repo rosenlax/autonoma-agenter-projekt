@@ -179,6 +179,13 @@ public class RoverAgent : Agent
         float distance = GetDistance();
         float speed = rb.linearVelocity.magnitude;
 
+        if (demonstrationMode && StepCount % 100 == 0)
+{
+    Debug.Log(
+        $"ROVER CHECK: Distance={distance:F2}m, Speed={speed:F2}m/s"
+    );
+}
+
         // Reward progress toward MeetingPoint
         float progress = previousDistance - distance;
 

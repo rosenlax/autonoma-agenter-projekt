@@ -1764,7 +1764,7 @@ MonoBehaviour:
   MaxStep: 0
   meetingPoint: {fileID: 2104494888}
   demonstrationMode: 1
-  successDistance: 2
+  successDistance: 6
   stopSpeed: 0.5
   maxDistance: 150
   maxSpeed: 20
