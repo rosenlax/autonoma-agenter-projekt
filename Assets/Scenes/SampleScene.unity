@@ -1472,7 +1472,7 @@ AudioListener:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1341598054}
-  m_Enabled: 1
+  m_Enabled: 0
 --- !u!20 &1341598058
 Camera:
   m_ObjectHideFlags: 0
@@ -1738,7 +1738,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 803546719}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 3a5c9d521e5ef4759a8246a07d52221e, type: 3}
   m_Name: 
@@ -1753,7 +1753,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 803546719}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: b9b2266da601bd14988d59b4075a0cf4, type: 3}
   m_Name: 
@@ -1764,8 +1764,8 @@ MonoBehaviour:
   MaxStep: 0
   meetingPoint: {fileID: 2104494888}
   demonstrationMode: 1
-  successDistance: 0.5
-  stopSpeed: 0.3
+  successDistance: 2
+  stopSpeed: 0.5
   maxDistance: 150
   maxSpeed: 20
   maxIdleSteps: 400
@@ -1822,7 +1822,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 406654488547587608, guid: e2c4287a936a99c4d9988378e62d0060, type: 3}
       propertyPath: m_IsKinematic
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 406654488547587609, guid: e2c4287a936a99c4d9988378e62d0060, type: 3}
       propertyPath: brakePower
@@ -1834,7 +1834,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 406654488547587609, guid: e2c4287a936a99c4d9988378e62d0060, type: 3}
       propertyPath: useAgentControl
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 1076196169278958764, guid: e2c4287a936a99c4d9988378e62d0060, type: 3}
       propertyPath: m_LocalPosition.x
@@ -1846,7 +1846,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 1076196169278958764, guid: e2c4287a936a99c4d9988378e62d0060, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 332
+      value: 285.73
       objectReference: {fileID: 0}
     - target: {fileID: 1076196169278958764, guid: e2c4287a936a99c4d9988378e62d0060, type: 3}
       propertyPath: m_LocalRotation.w
@@ -5104,7 +5104,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3a5c9d521e5ef4759a8246a07d52221e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Unity.ML-Agents::Unity.MLAgents.DecisionRequester
-  DecisionPeriod: 15
+  DecisionPeriod: 10
   DecisionStep: 0
   TakeActionsBetweenDecisions: 1
 --- !u!1 &3357641206802454505
@@ -5138,16 +5138,19 @@ MonoBehaviour:
   agentParameters:
     maxStep: 0
   hasUpgradedFromAgentParameters: 1
-  MaxStep: 3000
+  MaxStep: 0
   landingTarget: {fileID: 158225536}
   rover: {fileID: 1935619484}
-  trainingMode: 1
+  trainingMode: 0
   trainingStage: 0
   roverReadyAtStart: 1
   hoverHeight: 4
   maxDistance: 100
   maxSpeed: 15
+  observationPositionScale: 40
+  observationVelocityScale: 5
   approachRadius: 1.5
+  approachMaxSpeed: 3
   hoverRadius: 0.8
   hoverSpeed: 1
   requiredHoverSteps: 50
@@ -5155,10 +5158,17 @@ MonoBehaviour:
   landingHeightTolerance: 0.35
   landingSpeed: 0.6
   requiredLandingSteps: 10
+  landingDescentSpeed: 0.45
+  landingFinalHeightOffset: 0.22
+  simulateRoverArrivalForTesting: 0
   progressReward: 0.1
   successReward: 5
   failurePenalty: -2
   stepPenalty: -0.0005
+  actionChangePenalty: 0.0005
+  actionStrengthPenalty: 0.0001
+  nearTargetSpeedPenalty: 0.0003
+  stableNearTargetReward: 0.001
 --- !u!1 &3357641206802454507
 GameObject:
   m_ObjectHideFlags: 0
@@ -5197,7 +5207,7 @@ MonoBehaviour:
     VectorActionDescriptions: []
     VectorActionSpaceType: 1
     hasUpgradedBrainParametersWithActionSpec: 1
-  m_Model: {fileID: 5022602860645237092, guid: 06ed3f7db8f7a43408a9be26ab847b94, type: 3}
+  m_Model: {fileID: 5022602860645237092, guid: bfa039db335b62d469a80645c80c0ede, type: 3}
   m_InferenceDevice: 0
   m_BehaviorType: 2
   m_BehaviorName: Drone
@@ -5240,13 +5250,19 @@ MonoBehaviour:
   agentLift: 0
   maximumTiltAngle: 30
   attitudeStrength: 25
-  angularDamping: 6
+  angularDamping: 9
   horizontalDrag: 1.2
   maxHorizontalBrake: 4
   climbSpeed: 2.5
   altitudeStrength: 3
   verticalDamping: 3.5
   maximumVerticalCorrection: 7
+  hoverPositionGain: 1.4
+  hoverVelocityGain: 2.4
+  hoverMaxHorizontalSpeed: 2
+  hoverMaxHorizontalAcceleration: 4
+  hoverHeightGain: 1.2
+  hoverMaxVerticalSpeed: 1
 --- !u!1 &3357641206802454511
 GameObject:
   m_ObjectHideFlags: 0

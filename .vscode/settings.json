@@ -67,5 +67,5 @@
         "*.sln": "*.csproj",
         "*.slnx": "*.csproj"
     },
-    "dotnet.defaultSolution": "AA-projekt.slnx"
+    "dotnet.defaultSolution": "autonoma-agenter-projekt.slnx"
 }
