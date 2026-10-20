@@ -21,11 +21,21 @@ public class DroneAgent : Agent
     [Header("Landing Target")]
     public Transform landingTarget;
     public RoverAgent rover;
+    public Transform meetingPoint;
 
     [Header("Training")]
     public bool trainingMode = true;
     public TrainingStage trainingStage = TrainingStage.Approach;
     public bool roverReadyAtStart = true;
+
+    [Header("Level 2 Training (Optional)")]
+    public Level2Randomizer level2Randomizer;
+
+    [Header("Level 5 Obstacle Training")]
+    public bool failOnObstacleCollision = false;
+
+    [Header("Level 5 Inference")]
+    public bool allowHighAltitudeHandoff = false;
 
     [Header("Navigation")]
     public float hoverHeight = 3f;
@@ -123,13 +133,29 @@ public class DroneAgent : Agent
                simulateRoverArrivalForTesting;
     }
 
+
     private Vector3 GetHoverTarget()
     {
         if (landingTarget == null)
             return transform.position;
 
-        return landingTarget.position + Vector3.up * hoverHeight;
+        // Maintain the correct altitude above the truck bed.
+        Vector3 target =
+            landingTarget.position + Vector3.up * hoverHeight;
+
+        // During Level 2 inference, navigate independently
+        // to MeetingPoint instead of following the truck.
+        if (!trainingMode &&
+            meetingPoint != null &&
+            trainingStage != TrainingStage.Landing)
+        {
+            target.x = meetingPoint.position.x;
+            target.z = meetingPoint.position.z;
+        }
+
+        return target;
     }
+
 
     private Vector3 GetNavigationTarget()
     {
@@ -168,10 +194,23 @@ public class DroneAgent : Agent
         previousAction = Vector3.zero;
         hasPreviousAction = false;
 
+
         rb.isKinematic = false;
         transform.SetPositionAndRotation(startPosition, startRotation);
         rb.linearVelocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
+
+        // Level 2: generate new positions every training episode.
+        // Level 1 is unchanged because its randomizer reference is empty.
+        if (trainingMode &&
+            trainingStage == TrainingStage.Approach &&
+            level2Randomizer != null)
+        {
+            level2Randomizer.RandomizePositions();
+        }
+
+        controller.useAgentControl = true;
+
 
         controller.useAgentControl = true;
         controller.DisablePositionHold();
@@ -366,41 +405,56 @@ public class DroneAgent : Agent
     }
 
 
-private void CheckApproach(float distance, float speed, float upright)
-{
-    // Keep original training conditions unchanged.
-    // This preserves compatibility with the trained model.
-    if (trainingMode)
+
+    private void CheckApproach(
+        float distance,
+        float speed,
+        float upright)
     {
-        bool reachedTarget =
-            distance < approachRadius &&
-            speed < approachMaxSpeed &&
-            upright > 0.8f;
+        // Keep original ML training behavior unchanged.
+        if (trainingMode)
+        {
+            bool reachedTarget =
+                distance < approachRadius &&
+                speed < approachMaxSpeed &&
+                upright > 0.8f;
 
-        if (reachedTarget)
-            CompleteStage();
+            if (reachedTarget)
+                CompleteStage();
 
-        return;
+            return;
+        }
+
+        const float earlyHoverDistance = 5f;
+
+        Vector3 difference =
+            GetHoverTarget() - transform.position;
+
+        float horizontalDistance = new Vector2(
+            difference.x,
+            difference.z
+        ).magnitude;
+
+        // Normal Level 2 handoff OR
+        // Level 5 horizontal-only handoff.
+        bool reachedHandoff =
+            distance < earlyHoverDistance ||
+            (allowHighAltitudeHandoff &&
+             horizontalDistance < earlyHoverDistance);
+
+        if (!reachedHandoff)
+            return;
+
+        trainingStage = TrainingStage.Hover;
+        stableSteps = 0;
+
+        controller.SetPositionHoldTarget(GetHoverTarget());
+
+        Debug.Log(
+            "DRONE APPROACH HANDOFF! Switching to automatic HOVER."
+        );
     }
 
-    // INFERENCE ONLY:
-    // Switch to automatic position hold earlier
-    // to brake before reaching the truck.
-    float earlyHoverDistance = 5f;
-
-    if (distance >= earlyHoverDistance)
-        return;
-
-    // Hand over control to the hover controller.
-    trainingStage = TrainingStage.Hover;
-    stableSteps = 0;
-
-    controller.SetPositionHoldTarget(GetHoverTarget());
-
-    Debug.Log(
-        "DRONE APPROACH HANDOFF! Switching to automatic HOVER."
-    );
-}
 
 
     private void CheckHover(float distance, float speed, float upright)
@@ -615,4 +669,20 @@ private void CheckApproach(float distance, float speed, float upright)
 
         base.OnDisable();
     }
+
+
+    private void OnCollisionEnter(Collision collision)
+    {
+        if (!failOnObstacleCollision || episodeFinished)
+            return;
+
+        if (collision.gameObject.layer ==
+            LayerMask.NameToLayer("Obstacle"))
+        {
+            Debug.LogWarning("DRONE HIT OBSTACLE!");
+
+            FailEpisode();
+        }
+    }
+
 }
